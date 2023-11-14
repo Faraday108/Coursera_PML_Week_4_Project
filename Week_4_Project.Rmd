@@ -1,0 +1,47 @@
+---
+title: "Week 4 Project"
+author: "Nathan Young"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(caret)
+library(randomForest)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background  
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 (classe variable) different ways. More information is available from the [website](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) 
+
+ (see the section on the Weight Lifting Exercise Dataset).
+
+## Data 
+Data for this project was retrieved from the proved url's for training and test data. To prevent accessing the data repeatedly, it's good practice to surround a download call with a test if the file already exists. When loading the data, a warning was raised that there were parsing issues; when `problems(data)` was called, I found that there were several `#DIV/0!` strings that were preventing a clean import. This was managed by including the string in the na character list. 
+```{r, cache = TRUE}
+url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if (!file.exists("./data/train.csv")) {
+  download.file(url_train, destfile = "./data/train.csv")
+}
+
+if (!file.exists("./data/test.csv")) {
+  download.file(url_test, destfile = "./data/test.csv")
+}
+
+train <- read_csv("./data/train.csv", na = c("NA", "", "#DIV/0!"))
+test <- read_csv("./data/test.csv", na = c("NA", "", "#DIV/0!"))
+```
+
+## Analysis  
+This is a classification problem where the goal is to classify the data into one of 5 groups: A, B, C, D, or E. As such, a decision tree from `randomForest` is a classic choice. There are also likely to be variables that are highly correlated with each other so doing a preprocess with PCA is likely to benefit the dataset as well. 
+
+```{r PCA}
+M <- abs(cor(train[,-c(1:7, 160)]))
+diag(M) <- 0
+nrow(which(M > 0.8, arr.ind = T))
+```
+
+
