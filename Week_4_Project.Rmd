@@ -10,6 +10,7 @@ library(tidyverse)
 library(caret)
 library(randomForest)
 library(gt)
+library(rattle)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -32,11 +33,15 @@ if (!file.exists("./data/test.csv")) {
   download.file(url_test, destfile = "./data/test.csv")
 }
 
-train <- read_csv("./data/train.csv", na = c("NA", "", "#DIV/0!"))
-test <- read_csv("./data/test.csv", na = c("NA", "", "#DIV/0!"))
+train <- read_csv("./data/train.csv", na = c("NA", "", "#DIV/0!"), show_col_types = FALSE)
+test <- read_csv("./data/test.csv", na = c("NA", "", "#DIV/0!"), show_col_types = FALSE)
 ```
 ## Exploration 
-The first step in this process was to identify which variables in the dataset are useful for the analysis. When looking at a summary of the dataset, many of the columns were mostly `NA` so these columns were removed. Additionally, the predictor "classe", and columns 1 - 7 can be removed as these contain information not relevant to predicting "classe". Note that for the analyses without PCA, the `classe` variable is left in the train set. 
+The first step in this process was to identify which variables in the dataset are useful for the analysis. When looking at a summary of the dataset, many of the columns were mostly `NA` so these columns were removed. 
+
+Additionally, the predictor "classe", and columns 1 - 7 can be removed as these contain information not relevant to predicting "classe". Note that for the analyses without PCA, the `classe` variable is left in the train set. 
+
+To visually see whether variables tended to be correlated, please see the Appendix for a correlation plot of all 52 variables included in the analysis. 
 
 ```{r data cleaning, echo = FALSE}
 # First subset out classe and 1-7 and classe for PCA
@@ -49,10 +54,17 @@ M <- abs(cor(train_subset[,-53]))
 # Set diagonal to zero as we don't care that they are 1
 diag(M) <- 0
 ncorr <- nrow(which(M > 0.8, arr.ind = T))
+
+cat_count <- train_subset %>%
+  group_by(classe) %>%
+  summarize(prop = n() / nrow(train_subset)) %>%
+  pivot_wider(names_from = "classe", values_from = "prop")
+gt(cat_count, caption = "Percentage of exercises in each category") %>%
+  fmt_percent(decimal = 2)
 ```
 
 ## Analysis  
-This is a classification problem where the goal is to classify the data into one of 5 groups: A, B, C, D, or E. As such, a decision tree from `randomForest` is a classic choice. There are also `r ncorr` variables that are highly correlated with each other so doing a preprocess with PCA would reduce dimension of dataset. To evaluate which approach is best, I decided to build three models: 
+This is a classification problem where the goal is to classify the data into one of 5 groups: A, B, C, D, or E. As such, classification trees and decision trees from `randomForest` are classic choices. There are also `r ncorr` variables that are highly correlated with each other so doing a preprocess with PCA would reduce dimension of dataset, but will likely reduce model accuracy. To evaluate which approach is best, I decided to build three models: 
 
 1. A classification tree with `caret::train` and `rpart` using a PCA preprocess step. 
 2. A classification tree identical to 1. but without PCA
@@ -60,7 +72,10 @@ This is a classification problem where the goal is to classify the data into one
 
 Cross validation is included in the first two models by passing an argument to `trControl = trainControl(method = "cv", number = 3)`. 
 
-To measure out of sample error rates, the provided training data was split into a further training and validation set. The out of sample error rate is calculated as the `1 - Accuracy` of each model on the validation set. 
+To measure out of sample error rates, the provided training data was split into a further training and validation set. The out of sample error rate is calculated as the `1 - Accuracy` of each model on the validation set. This out of sample error rate, in addition to in sample accuracy, is used to evaluate which model is best to apply to the test set. 
+
+### Creation of Validation Set  
+A validation set is created by splitting the provided training set with `createDataPartition` where 70% of the data is used for the new training set and 30% for validation. 
 
 ```{r validation}
 # Split training into train and validation sets. 
@@ -69,7 +84,10 @@ train_subset_2 <- train_subset[inTrain,]
 valid <- train_subset[-inTrain,]
 ```
 
-```{r PCA Model}
+### Classification Tree with PCA  
+The first model evaluated is a classification tree which is available in the `caret` package via `method = "rpart"`. I chose to perform a principal components analysis on this model as there were several variables that were highly correlated. 
+
+```{r rpart PCA Model}
 # PCA without "classe"
 preProc <- preProcess(train_subset_2[,-53],method="pca")
 trainPC <- cbind(classe = train_subset_2$classe, 
@@ -85,49 +103,79 @@ pred_rpart_PC <- predict(mdl_rpart_PC, trainPC)
 cM_rpart_PC <- confusionMatrix(as.factor(train_subset_2$classe), pred_rpart_PC)
 cM_rpart_PC_valid <- confusionMatrix(as.factor(valid$classe), 
                                      predict(mdl_rpart_PC, validPC))
+
+
+fancyRpartPlot(mdl_rpart_PC$finalModel)
 ```
 
+The resulting classification tree above seems to do a poor job of classifying the `classe` outcome as it only predicts categories "A", "D" and "E" based on only PC14 and PC8. As categories "B" and "C" comprise 37% of the data, this model is guaranteed to have a poor accuracy. 
 
-```{r models}
+### Classification Tree without PCA  
+The second model evaluated is a classification tree which is available in the `caret` package via `method = "rpart"`. On this model, I didn't preprocess with principal components.  
 
-
+```{r rpart no PCA}
 mdl_rpart <- train(classe ~ ., 
                    method = "rpart", 
                    trControl = trainControl(method = "cv", number = 3),
                    data = train_subset_2)
-mdl_rf <- randomForest(as.factor(classe) ~ ., data = train_subset_2)
-
 pred_rpart <- predict(mdl_rpart, train_subset_2)
-pred_rf <- predict(mdl_rf, train_subset_2)
+
 cM_rpart <- confusionMatrix(as.factor(train_subset_2$classe), pred_rpart)
-cM_rf <- confusionMatrix(as.factor(train_subset_2$classe), pred_rf)
 
 cM_rpart_valid <- confusionMatrix(as.factor(valid$classe), 
                                   predict(mdl_rpart, valid))
+
+fancyRpartPlot(mdl_rpart$finalModel)
+```
+
+The resulting classification tree above does a better job of classifying the `classe` outcome as it predicts categories "A", "B", "C", and "E" based on `roll_belt`, `pitch_forearm`, `magnet_dumbell_y` and `roll_forearm`. As category "D" comprises 16% of the data, this model is guaranteed to have imperfect accuracy.
+
+### Random Forest  
+The final model is a random forest which is available from `randomForest`. 
+
+```{r randomForest}
+
+mdl_rf <- randomForest(as.factor(classe) ~ ., data = train_subset_2)
+
+pred_rf <- predict(mdl_rf, train_subset_2)
+
+cM_rf <- confusionMatrix(as.factor(train_subset_2$classe), pred_rf)
+
 cM_rf_valid <- confusionMatrix(as.factor(valid$classe), 
                                   predict(mdl_rf, valid))
-model_accuracy <- data.frame(
-  cbind("Model" = c("rpart with PCA", "rpart", "Random Forest"),
-        rbind(cM_rpart_PC$overall[1],
-              cM_rpart$overall[1],
-              cM_rf$overall[1]))) %>%
-  mutate(Accuracy = as.numeric(Accuracy))
-gt(model_accuracy, caption = "Model in-sample accuracy") %>%
-  fmt_number(decimals = 3)
 ```
+
+An initial interpretation of this model is difficult so the analysis of it will be left to the next section where we examine the in-sample accuracy and out-sample error rate. 
+
+## Results  
+To evaluate model selection, the in-sample accuracy of each model obtained from the `confusionMatrix` of each model. In addition, each of the models was used to predict the validation dataset to obtain an estimate of the out of sample error rate was measured as `1 - Accuracy` from the `confusionMatrix`. As seen in the following table, the *Random Forest model is the best model* with an in-sample accuracy of close to 1 and an out of sample error rate of .008. 
 
 ```{r}
-OOS <- data.frame(
-  cbind("Model" = c("rpart with PCA", "rpart", "Random Forest"),
-        rbind(1-cM_rpart_PC_valid$overall[1],
-              1-cM_rpart_valid$overall[1],
-              1-cM_rf_valid$overall[1]))) %>%
-  mutate("Error Rate" = as.numeric(Accuracy), .keep = "unused")
+model_summary <- tibble(
+  "Model" = c("rpart with PCA", "rpart", "Random Forest"), 
+  "In-sample Accuracy" = c(cM_rpart_PC$overall[1], 
+                            cM_rpart$overall[1],
+                            cM_rf$overall[1]), 
+  "Out-sample Error" = c(1-cM_rpart_PC_valid$overall[1],
+                          1-cM_rpart_valid$overall[1],
+                          1-cM_rf_valid$overall[1])
+)
 
-gt(OOS, 
-          caption = "Out of sample Error Rate (1 - Accuracy)") %>%
-  fmt_number(decimals = 3)
+gt(model_summary, caption = "Model Summary") %>%
+  fmt_number(decimals = 4)
 ```
 
+## Predictions on Test set  
+The predictions on the test set are found using the Random Forest model: 
 
+```{r}
+predict(mdl_rf, test)
+```
+
+## Appendix  
+### Correlation plot  
+
+```{r}
+ggcorrplot::ggcorrplot(cor(train_subset_2[,-53]), tl.cex = 4)
+```
 
