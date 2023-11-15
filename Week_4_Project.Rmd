@@ -9,6 +9,7 @@ output: html_document
 library(tidyverse)
 library(caret)
 library(randomForest)
+library(gt)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -34,14 +35,99 @@ if (!file.exists("./data/test.csv")) {
 train <- read_csv("./data/train.csv", na = c("NA", "", "#DIV/0!"))
 test <- read_csv("./data/test.csv", na = c("NA", "", "#DIV/0!"))
 ```
+## Exploration 
+The first step in this process was to identify which variables in the dataset are useful for the analysis. When looking at a summary of the dataset, many of the columns were mostly `NA` so these columns were removed. Additionally, the predictor "classe", and columns 1 - 7 can be removed as these contain information not relevant to predicting "classe". Note that for the analyses without PCA, the `classe` variable is left in the train set. 
+
+```{r data cleaning, echo = FALSE}
+# First subset out classe and 1-7 and classe for PCA
+train_subset <- train[,-c(1:7)] %>%
+  # Remove columns that consist of mostly NA values
+  discard(~(sum(is.na(.))/nrow(train) > .8))
+
+# positive correlation matrix
+M <- abs(cor(train_subset[,-53]))
+# Set diagonal to zero as we don't care that they are 1
+diag(M) <- 0
+ncorr <- nrow(which(M > 0.8, arr.ind = T))
+```
 
 ## Analysis  
-This is a classification problem where the goal is to classify the data into one of 5 groups: A, B, C, D, or E. As such, a decision tree from `randomForest` is a classic choice. There are also likely to be variables that are highly correlated with each other so doing a preprocess with PCA is likely to benefit the dataset as well. 
+This is a classification problem where the goal is to classify the data into one of 5 groups: A, B, C, D, or E. As such, a decision tree from `randomForest` is a classic choice. There are also `r ncorr` variables that are highly correlated with each other so doing a preprocess with PCA would reduce dimension of dataset. To evaluate which approach is best, I decided to build three models: 
 
-```{r PCA}
-M <- abs(cor(train[,-c(1:7, 160)]))
-diag(M) <- 0
-nrow(which(M > 0.8, arr.ind = T))
+1. A classification tree with `caret::train` and `rpart` using a PCA preprocess step. 
+2. A classification tree identical to 1. but without PCA
+3. A random forest model with `randomForest::randomForest`
+
+Cross validation is included in the first two models by passing an argument to `trControl = trainControl(method = "cv", number = 3)`. 
+
+To measure out of sample error rates, the provided training data was split into a further training and validation set. The out of sample error rate is calculated as the `1 - Accuracy` of each model on the validation set. 
+
+```{r validation}
+# Split training into train and validation sets. 
+inTrain <- createDataPartition(y=train_subset$classe, p=0.7, list=F)
+train_subset_2 <- train_subset[inTrain,]
+valid <- train_subset[-inTrain,]
 ```
+
+```{r PCA Model}
+# PCA without "classe"
+preProc <- preProcess(train_subset_2[,-53],method="pca")
+trainPC <- cbind(classe = train_subset_2$classe, 
+                 predict(preProc,train_subset_2[,-53]))
+validPC <- cbind(classe = valid$classe, 
+                 predict(preProc, valid[,-53]))
+
+mdl_rpart_PC <- train(classe ~ .,
+                      method="rpart",
+                      trControl = trainControl(method = "cv", number = 3),
+                      data=trainPC)
+pred_rpart_PC <- predict(mdl_rpart_PC, trainPC)
+cM_rpart_PC <- confusionMatrix(as.factor(train_subset_2$classe), pred_rpart_PC)
+cM_rpart_PC_valid <- confusionMatrix(as.factor(valid$classe), 
+                                     predict(mdl_rpart_PC, validPC))
+```
+
+
+```{r models}
+
+
+mdl_rpart <- train(classe ~ ., 
+                   method = "rpart", 
+                   trControl = trainControl(method = "cv", number = 3),
+                   data = train_subset_2)
+mdl_rf <- randomForest(as.factor(classe) ~ ., data = train_subset_2)
+
+pred_rpart <- predict(mdl_rpart, train_subset_2)
+pred_rf <- predict(mdl_rf, train_subset_2)
+cM_rpart <- confusionMatrix(as.factor(train_subset_2$classe), pred_rpart)
+cM_rf <- confusionMatrix(as.factor(train_subset_2$classe), pred_rf)
+
+cM_rpart_valid <- confusionMatrix(as.factor(valid$classe), 
+                                  predict(mdl_rpart, valid))
+cM_rf_valid <- confusionMatrix(as.factor(valid$classe), 
+                                  predict(mdl_rf, valid))
+model_accuracy <- data.frame(
+  cbind("Model" = c("rpart with PCA", "rpart", "Random Forest"),
+        rbind(cM_rpart_PC$overall[1],
+              cM_rpart$overall[1],
+              cM_rf$overall[1]))) %>%
+  mutate(Accuracy = as.numeric(Accuracy))
+gt(model_accuracy, caption = "Model in-sample accuracy") %>%
+  fmt_number(decimals = 3)
+```
+
+```{r}
+OOS <- data.frame(
+  cbind("Model" = c("rpart with PCA", "rpart", "Random Forest"),
+        rbind(1-cM_rpart_PC_valid$overall[1],
+              1-cM_rpart_valid$overall[1],
+              1-cM_rf_valid$overall[1]))) %>%
+  mutate("Error Rate" = as.numeric(Accuracy), .keep = "unused")
+
+gt(OOS, 
+          caption = "Out of sample Error Rate (1 - Accuracy)") %>%
+  fmt_number(decimals = 3)
+```
+
 
 
